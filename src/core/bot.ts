@@ -1024,8 +1024,13 @@ export class LettaBot implements AgentSession {
               await adapter.sendMessage({ chatId: msg.chatId, text: prefixed, threadId: msg.threadId });
             }
             sentAnyMessage = true;
-          } catch {
-            if (messageId) sentAnyMessage = true;
+          } catch (finalizeErr) {
+            if (messageId) {
+              // Edit failed but original message was already visible
+              sentAnyMessage = true;
+            } else {
+              log.warn('finalizeMessage send failed:', finalizeErr instanceof Error ? finalizeErr.message : finalizeErr);
+            }
           }
         }
         response = '';
@@ -1442,8 +1447,9 @@ export class LettaBot implements AgentSession {
           }
           sentAnyMessage = true;
           this.store.resetRecoveryAttempts();
-        } catch {
+        } catch (sendErr) {
           // Edit failed -- send as new message so user isn't left with truncated text
+          log.warn('Final message delivery failed:', sendErr instanceof Error ? sendErr.message : sendErr);
           try {
             await adapter.sendMessage({ chatId: msg.chatId, text: prefixedFinal, threadId: msg.threadId });
             sentAnyMessage = true;
