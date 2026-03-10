@@ -15,7 +15,7 @@ import { formatApiErrorForUser } from './errors.js';
 import { formatToolCallDisplay, formatReasoningDisplay, formatQuestionsForChannel } from './display.js';
 import type { AgentSession } from './interfaces.js';
 import { Store } from './store.js';
-import { getPendingApprovals, rejectApproval, cancelRuns, cancelConversation, recoverOrphanedConversationApproval, getLatestRunError, getAgentModel, updateAgentModel } from '../tools/letta-api.js';
+import { getPendingApprovals, rejectApproval, cancelRuns, cancelConversation, recoverOrphanedConversationApproval, getLatestRunError, getAgentModel, updateAgentModel, isRecoverableConversationId, recoverPendingApprovalsForAgent } from '../tools/letta-api.js';
 import { getAgentSkillExecutableDirs, isVoiceMemoConfigured } from '../skills/loader.js';
 import { formatMessageEnvelope, formatGroupBatchEnvelope, type SessionContextOptions } from './formatter.js';
 import type { GroupBatcher } from './group-batcher.js';
@@ -831,7 +831,7 @@ export class LettaBot implements AgentSession {
       );
       
       if (pendingApprovals.length === 0) {
-        if (this.store.conversationId) {
+        if (isRecoverableConversationId(this.store.conversationId)) {
           const convResult = await recoverOrphanedConversationApproval(
             this.store.agentId!,
             this.store.conversationId
@@ -1609,9 +1609,15 @@ export class LettaBot implements AgentSession {
             const retryConvIdFromStore = (retryConvKey === 'shared'
               ? this.store.conversationId
               : this.store.getConversationId(retryConvKey)) ?? undefined;
-            const retryConvId = (typeof streamMsg.conversationId === 'string' && streamMsg.conversationId.length > 0)
+            const retryConvIdRaw = (typeof streamMsg.conversationId === 'string' && streamMsg.conversationId.length > 0)
               ? streamMsg.conversationId
               : retryConvIdFromStore;
+            const retryConvId = isRecoverableConversationId(retryConvIdRaw)
+              ? retryConvIdRaw
+              : undefined;
+            if (!retryConvId && retryConvIdRaw) {
+              log.info(`Skipping approval recovery for non-recoverable conversation id: ${retryConvIdRaw}`);
+            }
             const initialRetryDecision = this.buildResultRetryDecision(
               streamMsg,
               resultText,
@@ -1664,6 +1670,19 @@ export class LettaBot implements AgentSession {
                 log.warn(`Approval recovery failed: ${convResult.details}`);
                 log.info('Retrying once with a fresh session after approval conflict...');
                 return this.processMessage(msg, adapter, true);
+              } else {
+                log.info('Approval conflict detected in default/alias conversation -- attempting agent-level recovery...');
+                this.sessionManager.invalidateSession(retryConvKey);
+                session = null;
+                clearInterval(typingInterval);
+                const agentResult = await recoverPendingApprovalsForAgent(this.store.agentId);
+                if (agentResult.recovered) {
+                  log.info(`Agent-level recovery succeeded (${agentResult.details}), retrying message...`);
+                  return this.processMessage(msg, adapter, true);
+                }
+                log.warn(`Agent-level recovery failed: ${agentResult.details}`);
+                log.info('Retrying once with a fresh session after approval conflict...');
+                return this.processMessage(msg, adapter, true);
               }
             }
 
@@ -1697,6 +1716,8 @@ export class LettaBot implements AgentSession {
                   log.info('Retrying once after terminal error (no orphaned approvals detected)...');
                   return this.processMessage(msg, adapter, true);
                 }
+              } else if (!retried && retryDecision.shouldRetryForErrorResult && !retryConvId) {
+                log.warn('Skipping terminal-error retry because no recoverable conversation id is available.');
               }
             }
 
@@ -1934,6 +1955,14 @@ export class LettaBot implements AgentSession {
                   || ((lastErrorDetail?.message?.toLowerCase().includes('conflict') || false)
                   && (lastErrorDetail?.message?.toLowerCase().includes('waiting for approval') || false));
                 if (isApprovalIssue && !retried) {
+                  if (this.store.agentId) {
+                    const recovery = await recoverPendingApprovalsForAgent(this.store.agentId);
+                    if (recovery.recovered) {
+                      log.info(`sendToAgent: agent-level approval recovery succeeded (${recovery.details})`);
+                    } else {
+                      log.warn(`sendToAgent: agent-level approval recovery did not resolve approvals (${recovery.details})`);
+                    }
+                  }
                   log.info('sendToAgent: approval issue detected -- retrying once with fresh session...');
                   this.sessionManager.invalidateSession(convKey);
                   retried = true;
