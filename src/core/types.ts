@@ -132,6 +132,9 @@ export interface SkillsConfig {
   additionalSkills?: string[];
 }
 
+import type { SleeptimeTrigger, SleeptimeBehavior, SleeptimeConfig } from '../config/types.js';
+export type { SleeptimeTrigger, SleeptimeBehavior, SleeptimeConfig };
+
 /**
  * Bot configuration
  */
@@ -158,6 +161,7 @@ export interface BotConfig {
 
   // Memory filesystem (context repository)
   memfs?: boolean; // true -> --memfs, false -> --no-memfs, undefined -> leave unchanged
+  sleeptime?: SleeptimeConfig; // Configure SDK reflection reminders (/sleeptime equivalent)
 
   // Security
   redaction?: import('./redact.js').RedactionConfig;
