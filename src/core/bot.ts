@@ -1442,9 +1442,13 @@ export class LettaBot implements AgentSession {
             }
 
             case 'tool_call': {
-              // Finalize any pending assistant text on type transition
+              // Discard any unsent assistant text accumulated before this tool call.
+              // Mid-turn assistant content (model scratch notes) must not leak to the
+              // user. The real response will follow after the tool loop completes.
               if (lastEventType === 'text' && response.trim()) {
-                await finalizeMessage();
+                log.info(`Discarding pre-tool assistant text (${response.trim().length} chars)`);
+                response = '';
+                messageId = null;
               }
               lastEventType = 'tool_call';
               this.sessionManager.syncTodoToolCall(event.raw);
@@ -1609,10 +1613,17 @@ export class LettaBot implements AgentSession {
               // already yielded and possibly finalized (sent), don't override.
               if (event.text.trim() && !event.hadStreamedText && event.success && !event.error) {
                 response = event.text;
-              } else if (!sentAnyMessage && response.trim().length === 0 && event.text.trim() && event.success && !event.error) {
-                // Safety fallback: if nothing was delivered yet and response is empty,
-                // allow result-text-based resend.
-                response = event.text;
+              } else if (!sentAnyMessage && response.trim().length === 0 && event.success && !event.error) {
+                // Safety fallback: if nothing was delivered yet and response is empty.
+                // Prefer the raw result field when the pipeline's text came from
+                // pre-tool assistant content that was discarded (hadStreamedText is
+                // true but response was cleared by the tool_call discard logic).
+                const rawResult = typeof event.raw.result === 'string' ? event.raw.result.trim() : '';
+                if (!event.hadStreamedText && event.text.trim()) {
+                  response = event.text;
+                } else if (rawResult) {
+                  response = rawResult;
+                }
               }
 
               const hasResponse = response.trim().length > 0;
